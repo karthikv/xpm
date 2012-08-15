@@ -1,0 +1,223 @@
+#!bin/python
+import argparse
+import urllib2
+import json
+import cssmin
+import jsmin
+
+SEARCH_URL = 'http://registry.x-tags.org/search/'
+CUSTOM_TAGS_CSS_FILE_NAME = 'custom-tags.css'
+CUSTOM_TAGS_JS_FILE_NAME = 'custom-tags.js'
+
+def main():
+    """
+    Main function where the xtags package manager begins.
+    """
+    parser = argparse.ArgumentParser(description='xpm - the x-tag package manager')
+    subparsers = parser.add_subparsers(help='commands', dest='command')
+
+    install_parser = subparsers.add_parser('install', help='Install an xtag.')
+    install_parser.add_argument('tag_name', help='the name of the tag to' \
+        ' install')
+
+    uninstall_parser = subparsers.add_parser('uninstall', help='Uninstall an' \
+        ' xtag.')
+    uninstall_parser.add_argument('tag_name', help='the name of the tag to' \
+        ' uninstall')
+
+    arguments = parser.parse_args()
+    if arguments.command == 'install':
+        fetch_tag(arguments)
+    elif arguments.command == 'uninstall':
+        remove_tag(arguments)
+
+def fetch_tag(arguments):
+    """
+    Fetches a tag given arguments from an ArgumentParser.
+
+    @param arguments - the arguments on the command line
+    """
+    xtag_data = fetch_xtag_data(arguments.tag_name)
+
+    if len(xtag_data) == None:
+        print "Could not find xtag named '%s'." % arguments.tag_name
+    else:
+        xtag_data = xtag_data[0]
+        css_contents, js_contents = fetch_file_contents(xtag_data)
+
+        # minify contents
+        css_contents = cssmin.cssmin(css_contents)
+        js_contents = jsmin.jsmin(js_contents)
+
+        update_custom_tag_files(xtag_data, css_contents, js_contents)
+        print "Successfully added <%s> CSS and JS to %s and %s," \
+            " respectively." % (xtag_data['tag_name'], \
+            CUSTOM_TAGS_CSS_FILE_NAME, CUSTOM_TAGS_JS_FILE_NAME)
+
+def fetch_xtag_data(tag_name):
+    """
+    Fetches and returns xtag data in the form of a dictionary for the given
+    tag name.
+
+    @param tag_name - the name of the tag to fetch data for
+    @return xtag data
+    """
+    # search url requires a query argument, which is the tag name 
+    url_args = { 'query': tag_name }
+    url = SEARCH_URL + generate_query_string(url_args)
+
+    try:
+        search_handle = urllib2.urlopen(url)
+    except urllib2.URLError as error:
+        print 'Could not open search url; error:'
+        raise error
+
+    search_results = search_handle.read()
+    search_results = json.loads(search_results)
+
+    return search_results['data']
+
+def fetch_file_contents(xtag_data):
+    """
+    Given xtag data, fetch the corresponding CSS and JS files that define the
+    tag.
+
+    @param xtag_data - the tag data to fetch CSS/JS for
+    @return tuple of CSS file contents, JS file contents
+    """
+    name = xtag_data['name']
+
+    # get github raw url of css/js file for xtag
+    url = xtag_data['url']
+    url = url.replace('/tree', '')
+    url = url.replace('github.com', 'raw.github.com')
+
+    css_url = url + '/' + name.lower() + '.css'
+    js_url = url + '/' + name.lower() + '.js'
+
+    try:
+        css_handle = urllib2.urlopen(css_url)
+        js_handle = urllib2.urlopen(js_url)
+    except urllib2.URLError as error:
+        print 'Could not fetch xtag files; error:'
+        raise error
+
+    return css_handle.read(), js_handle.read()
+
+def update_custom_tag_files(xtag_data, css_contents = '', js_contents = '',
+    remove=False):
+    """
+    Append the CSS and JS contents to the corresponding custom tags files.
+
+    @param xtag_data - the tag data to insert the contents for
+    @param css_contents - the CSS contents to append
+    @param js_contents - the JS contents to append
+    @param remove - whether to remove the tag instead of adding it
+    """
+    name = xtag_data['name']
+
+    start_tag_mark = '/* xpm_start_' + name + ' */\n'
+    end_tag_mark = '\n/* xpm_end_' + name + ' */\n'
+
+    if remove:
+        remove_custom_tag(xtag_data, start_tag_mark, end_tag_mark)
+    else:
+        add_custom_tag(xtag_data, start_tag_mark, end_tag_mark, css_contents,
+            js_contents)
+
+def add_custom_tag(xtag_data, start_tag_mark, end_tag_mark, css_contents,
+    js_contents):
+    """
+    Adds the given tag's CSS/JS to the corresponding custom tags files.
+
+    @param xtag_data - the data for the tag to remove
+    @param start_tag_mark - the start marking for the tag in the custom tags
+        files
+    @param end_tag_mark - the end marking for the tag in the custom tags files
+    @param css_contents - the contents of the tag's CSS file
+    @param js_contents - the contents of the tag's JS file
+    """
+    css_handle = open(CUSTOM_TAGS_CSS_FILE_NAME, 'a') 
+    js_handle = open(CUSTOM_TAGS_JS_FILE_NAME, 'a')
+
+    # add start and end tag markers for reference
+    css_handle.write(start_tag_mark)
+    js_handle.write(start_tag_mark)
+
+    css_handle.write(css_contents)
+    js_handle.write(js_contents)
+
+    css_handle.write(end_tag_mark)
+    js_handle.write(end_tag_mark)
+
+    css_handle.close()
+    js_handle.close()
+
+def remove_custom_tag(xtag_data, start_tag_mark, end_tag_mark):
+    """
+    Removes the given tag's CSS/JS from the corresponding custom tags files.
+
+    @param xtag_data - the data for the tag to remove
+    @param start_tag_mark - the start marking for the tag in the custom tags
+        files
+    @param end_tag_mark - the end marking for the tag in the custom tags files
+    """
+    css_handle = open(CUSTOM_TAGS_CSS_FILE_NAME, 'r+') 
+    js_handle = open(CUSTOM_TAGS_JS_FILE_NAME, 'r+')
+
+    css_contents = css_handle.read()
+    js_contents = js_handle.read()
+
+    css_start_index = css_contents.find(start_tag_mark)
+    js_start_index = js_contents.find(start_tag_mark)
+
+    css_end_index = css_contents.find(end_tag_mark) + \
+        len(end_tag_mark)
+    js_end_index = js_contents.find(end_tag_mark) + \
+        len(end_tag_mark)
+
+    # remove CSS/JS based off of start and end markers
+    css_contents = css_contents[:css_start_index] + \
+        css_contents[css_end_index:]
+    js_contents = js_contents[:js_start_index] + js_contents[js_end_index:]
+
+    css_handle.truncate(0)
+    js_handle.truncate(0)
+
+    css_handle.seek(0)
+    js_handle.seek(0)
+
+    css_handle.write(css_contents)
+    js_handle.write(js_contents)
+
+    css_handle.close()
+    js_handle.close()
+
+def remove_tag(arguments):
+    """
+    Removes a tag given arguments from an ArgumentParser.
+
+    @param arguments - the arguments on the command line
+    """
+    xtag_data = fetch_xtag_data(arguments.tag_name)
+
+    if len(xtag_data) == None:
+        print "Could not find xtag named '%s'." % arguments.tag_name
+    else:
+        xtag_data = xtag_data[0]
+        update_custom_tag_files(xtag_data, remove=True)
+        print "Successfully removed <%s> CSS and JS from %s and %s," \
+            " respectively." % (xtag_data['tag_name'], \
+            CUSTOM_TAGS_CSS_FILE_NAME, CUSTOM_TAGS_JS_FILE_NAME)
+
+def generate_query_string(arguments):
+    """
+    Generates and returns a query string for the given map of
+    argument => value pairs.
+    """
+    arguments = map(lambda argument: argument + '=' + arguments[argument],
+        arguments)
+    return '?' + '&'.join(arguments)
+
+if __name__ == '__main__':
+    main()

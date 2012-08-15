@@ -1,0 +1,10 @@
+.DS_Store
+*.sw[pon]
+custom-tags.css
+custom-tags.js
+
+# virtualenv
+bin/
+include/
+lib/
+.Python
